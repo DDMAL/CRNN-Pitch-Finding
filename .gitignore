@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+data/
+results*/
+mei/
+scans/
+*.jpg
+*.png
+!docs/**/*.jpg
+!docs/**/*.png
+slurm_*.out
