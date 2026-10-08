@@ -122,6 +122,8 @@ def main():
     ap.add_argument('--max_width', type=int, default=None,
                      help='超过此宽度就等比缩放；配合 --format jpg 能显著减小文件体积')
     ap.add_argument('--format', choices=['png', 'jpg'], default='png')
+    ap.add_argument('--title_prefix', default=None,
+                     help='加在每张图标题最前面的标签（比如手稿名/标签方案），方便混在一起看的时候区分来源')
     args = ap.parse_args()
 
     out_dir = args.out_dir or (args.results_dir / 'viz')
@@ -157,6 +159,8 @@ def main():
         out_name = f"{tag}_{rank:02d}_{r['folio']}_{r['system_idx']:02d}.{args.format}"
         out_path = out_dir / out_name
         title = f"{r['folio']} #{r['system_idx']}  acc={r['acc']:.2f}  ({tag})"
+        if args.title_prefix:
+            title = f"{args.title_prefix} — {title}"
         render_line(img_path, r['pred'].split(), r['target'].split(), out_path, title=title,
                     max_width=args.max_width)
         print(f'  {out_name}')

@@ -14,6 +14,7 @@ covers just enough to install and run the code; this is everything else.
 - [Example predictions](#example-predictions)
 - [The YOLO detector](#the-yolo-detector)
 - [Data quality: diagnosing crop↔label mismatches](#data-quality-diagnosing-croplabel-mismatches)
+- [Cross-manuscript tests: Salzinnes and MS73](#cross-manuscript-tests-salzinnes-and-ms73)
 - [Known limitations](#known-limitations)
 - [Future directions](#future-directions)
 
@@ -294,6 +295,113 @@ on equal footing. A corpus with a higher fallback rate, or a matching
 algorithm with more room for error, could see a much bigger effect from
 the same fix.
 
+## Cross-manuscript tests: Salzinnes and MS73
+
+Everything above comes from one manuscript. As a check of whether any of it
+transfers, the Einsiedeln-trained models (no retraining) were run zero-shot
+against two other manuscripts — the **Salzinnes Antiphonal** and **MS73**
+(a 15th-century Italian antiphonal) — using MEI ground truth and the
+bundled YOLO detector exactly as documented above.
+
+**Getting page images was the hard part, and the two manuscripts ended up
+very differently resourced.** The public MEI ground truth for both is
+available from [DDMAL's e2e-omr-resources
+repo](https://github.com/DDMAL/e2e-omr-resources), but that repo does not
+include full-resolution page scans for either — only a handful of
+document-segmentation training crops. Page scans had to be tracked down
+separately for each:
+- **Salzinnes**: only 8 of 464 pages had scans available (left over,
+  coincidentally, from unrelated prior work on this project) — not
+  something to rely on finding again, and far too small a sample on its
+  own (see below).
+- **MS73**: full scans for 159 of 285 pages (55.8%) were found on
+  [DDMAL-lab/mothra-shared-groundtruth on Hugging
+  Face](https://huggingface.co/datasets/DDMAL-lab/mothra-shared-groundtruth/tree/main/Pics%20MS73).
+  Those images are named by a sequential scan number (`MS73_012.jpg`, ...)
+  rather than by folio; the MEI filenames themselves encode the same
+  sequence number as a suffix (`..._005r-012.mei`), which is what made the
+  matching possible — parse that suffix out of each MEI filename and look
+  up the same number in the image filenames.
+
+Both findings matter beyond this specific pair of manuscripts: **a public
+MEI-ground-truth release does not necessarily come with a matching public
+image release**, and when it doesn't, the images may still exist somewhere
+else (a different archive, a different file-naming scheme) and are worth a
+real search before assuming a manuscript can't be tested.
+
+**MEI schema compatibility**: confirmed directly compatible for both — same
+`<nc>` (`pname`/`oct`/`facs`), `<zone>` (`ulx`/`uly`/`lrx`/`lry`), and
+`<clef>` (`shape`/`line`) structure as Einsiedeln, and the zone coordinates
+matched the actual page images' pixel dimensions 1:1 in both cases (checked
+directly, not assumed). No adaptation needed to run `build_dataset.py` as-is
+for either manuscript; only `--mei_glob`/`--folio_prefix` (and, for MS73,
+renaming files to a consistent `<folio>.mei`/`<folio>.jpg` pairing) had to
+be set up for each manuscript's filename conventions.
+
+### Salzinnes (n=24, a pilot, not a real estimate)
+
+Running `build_dataset.py` zero-shot on the 8 available pages produced 112
+raw line crops, of which only **24 (21%) survived** the page-level
+fallback-cutoff filter (step 5 in [Pipeline](#pipeline)) — a far higher
+drop rate than Einsiedeln's 83.7% retention, a first sign that the bundled
+detector generalizes less reliably to Salzinnes specifically (see MS73
+below for a less noisy data point on this).
+
+`pname_seq` scored **0.867 / 0.903** (macro/micro) across those 24 lines —
+but per-folio accuracy ranged from **-0.21** (`013r`) to **0.97** (`171r`,
+`166r`), consistent with a handful of folios dominating the average rather
+than a representative sample. `pos_seq` **could not be evaluated at all**:
+22 of the 24 surviving lines contain a relative staff position (`-3`) that
+never occurs anywhere in Einsiedeln's training vocabulary (which jumps
+directly from `-4` to `-2`). Treat both numbers as data points from a
+too-small, possibly-biased sample, not a generalization estimate — MS73's
+much larger sample below is the more trustworthy result.
+
+### MS73 (n≈739, a real sample)
+
+Running `build_dataset.py` zero-shot on the 159 available pages produced
+1012 raw line crops, of which **739 (73%) survived** the fallback-cutoff
+filter across 144 (of 157 processed) folios — much closer to Einsiedeln's
+83.7% retention than Salzinnes's 21% was, suggesting Salzinnes specifically
+(rather than "any new manuscript") was the harder case for this detector.
+
+| label scheme | n (lines / folios) | test accuracy (macro / micro) |
+|---|---|---|
+| `pname_seq` | 739 / 144 | 0.636 / 0.663 |
+| `pos_seq` | 736 / 144 (3 lines excluded, see below) | **0.882 / 0.895** |
+
+Both numbers are well below Einsiedeln's in-domain test accuracy (0.80ish
+for `pname_seq`, 0.81ish for `pos_seq` — see [Results](#results)), as
+expected for zero-shot transfer to a manuscript the model never saw. The
+striking part is the **gap between the two schemes**: `pos_seq` beats
+`pname_seq` by about **0.25** here, versus roughly 0.01 in-domain on
+Einsiedeln. That's consistent with the [label-scheme
+rationale](#label-schemes-pname_seq-vs-pos_seq): `pname_seq` requires
+correctly resolving octave on top of pitch class, which depends on getting
+the manuscript's specific pitch range/clef usage right, while `pos_seq`
+sidesteps that — so when the model is thrown at genuinely unfamiliar
+melodic material, `pos_seq`'s advantage shows up far more strongly than it
+did within one manuscript's own, more homogeneous data. (This is one data
+point, not a second manuscript's worth of confirmation — see [Future
+directions](#future-directions).)
+
+The `pos_seq` vocabulary-coverage problem found on Salzinnes **did recur
+here, but at a much smaller scale**: MS73's data touches positions up to
+`16`, 3 beyond Einsiedeln training's max of `13` — but only 3 of 739 lines
+(0.4%) were affected, so those 3 were excluded and the remaining 736 scored
+normally, rather than the scheme being unusable outright like on Salzinnes.
+Both manuscripts show the same failure mode; they differ enormously in how
+often it actually bites, which looks like it depends on how much a target
+manuscript's ambitus happens to overlap the training manuscript's — not
+something to count on in general. See [Known
+limitations](#known-limitations) and [Future
+directions](#future-directions).
+
+The worst-scoring folios were largely the *same* folios for both schemes
+(`104r`, `140v`, `076r`/`076v`) — consistent with those specific pages
+having a detection/crop problem independent of which label scheme is
+predicted, rather than a schemes-specific weakness.
+
 ## Known limitations
 
 - **The step-5 filter is a proxy, not a direct check.** It only catches
@@ -325,12 +433,35 @@ the same fix.
   unreliable** (don't correspond to real ink positions on the scan) — this
   affects any diagnostic that trusts individual note coordinates, not just
   the crop-matching step.
-- **The `pos_seq` vs `pname_seq` comparison uses manuscript-specific
-  data.** The general finding (relative position is easier to learn,
-  especially in low-data regimes) is plausibly transferable to other
-  square-notation corpora — the underlying argument (monotonic,
-  octave-independent target) doesn't depend on this specific manuscript —
-  but it hasn't been tested on one.
+- **The `pos_seq` vs `pname_seq` comparison is now cross-manuscript
+  tested, but only on one real sample.** MS73's much larger, less biased
+  sample (n=739/144 folios) showed `pos_seq` beating `pname_seq` by ~0.25
+  zero-shot, far more than the ~0.01 in-domain gap — consistent with the
+  label-scheme rationale, since `pname_seq` additionally requires
+  resolving octave against a manuscript-specific pitch range while
+  `pos_seq` doesn't (see [Cross-manuscript
+  tests](#cross-manuscript-tests-salzinnes-and-ms73)). That's one
+  manuscript's worth of confirmation, not independent replication.
+- **`pos_seq`'s vocabulary is manuscript-specific in a way `pname_seq`'s
+  isn't — confirmed real, but how much it bites varies a lot.** `pos_seq`'s
+  class set is derived empirically from whichever staff positions occur in
+  the training manuscript, not a fixed universal alphabet. This made
+  `pos_seq` entirely unusable zero-shot on Salzinnes (22/24 lines
+  affected) but only trimmed 3/739 lines on MS73 — the same structural gap,
+  but its practical severity seems to depend on how much the new
+  manuscript's ambitus happens to overlap the training manuscript's, which
+  isn't something to assume in advance. Any deployment on a new manuscript
+  needs to check vocabulary coverage first (compare its `pos_vocab.json`
+  against the trained model's) rather than assume either outcome. See
+  [Cross-manuscript tests](#cross-manuscript-tests-salzinnes-and-ms73).
+- **The zero-shot detector's reliability varies a lot by target
+  manuscript.** Only 21% of Salzinnes's raw detected lines survived
+  filtering vs. 73% for MS73 vs. 83.7% for Einsiedeln itself (see
+  [Cross-manuscript tests](#cross-manuscript-tests-salzinnes-and-ms73)) —
+  MS73 came reasonably close to in-domain reliability, but Salzinnes
+  (admittedly also the smaller, more availability-biased sample of the
+  two) did not. Not something to assume will "just work" on an arbitrary
+  new manuscript without checking.
 
 ## Future directions
 
@@ -343,16 +474,35 @@ the same fix.
   and more varied set of source manuscripts, would likely reduce both the
   fallback rate and the amount of matching noise the
   [Data quality](#data-quality-diagnosing-croplabel-mismatches) section is
-  about.
-- **Test on manuscripts other than the one this was developed on.** Every
-  number in this document — the `pos_seq` vs `pname_seq` comparison, the
-  fallback filter's measured (small) effect, the mismatch rate itself —
-  comes from a single manuscript's data and MEI encoding conventions.
-  Whether these findings hold on a manuscript with different notation
-  density, ink quality, page layout, or MEI annotation quality is
-  untested. This matters most for the `pos_seq` finding: its claimed
-  advantage is a property of the label scheme itself and should transfer,
-  but that's a prediction, not something verified outside this one corpus.
+  about — and would likely help Salzinnes specifically more than MS73,
+  given how much worse the current detector's retention rate was there.
+- **Get a full-scale Salzinnes evaluation; add more manuscripts beyond
+  these two.** MS73 now has a real, 739-line zero-shot result; Salzinnes
+  still only has an 8-page pilot (scans for the rest of its 464 pages
+  weren't found — the e2e-omr-resources repo doesn't host them, and no
+  equivalent of MS73's Hugging Face image dump was located for Salzinnes;
+  it may still exist somewhere). Beyond these two, every finding in this
+  document is still only replicated on one real cross-manuscript sample —
+  a third and fourth manuscript would say a lot more about whether the
+  `pos_seq` advantage and the detector's variable reliability are generally
+  true or specific to MS73.
+- **Fix `pos_seq`'s vocabulary to not depend on the training manuscript's
+  ambitus.** Confirmed on real data to matter (see Known limitations): a
+  fixed, theoretical range (e.g. every integer position a reasonable
+  number of ledger lines above/below a 4-line staff, decided up front
+  rather than read off the training set) would remove this failure mode
+  entirely, at the cost of a slightly larger — but now
+  guaranteed-sufficient — output alphabet. Worth doing even though MS73's
+  hit rate was low (0.4%): Salzinnes showed the same fix would matter a
+  lot more on a different manuscript, and there's no reliable way to know
+  in advance which case a new one will be.
+- **Decide what to do given the zero-shot results in hand.** `pos_seq`'s
+  0.882/0.895 macro/micro on MS73 may already be usable depending on the
+  application; `pname_seq`'s 0.636/0.663 more likely needs improvement
+  before it's useful standalone. If so, training/fine-tuning on the new
+  manuscript directly (the original fallback plan) is the next step —
+  now informed by an actual zero-shot baseline to improve on, rather than
+  a guess at whether that step is even necessary.
 - **Revisit the DP-matching mystery** (see Known limitations) with a
   cleaner experimental setup than what was tried here — e.g. controlling
   for exactly *which* lines differ between the greedy and DP outputs, and
